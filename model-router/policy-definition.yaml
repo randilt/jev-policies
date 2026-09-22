@@ -1,0 +1,62 @@
+name: jev-model-router
+version: v0.1.0
+displayName: Jev Model Router (PoC)
+description: |
+  Routes each request to the best-fit LLM provider from a configured
+  candidate set, chosen by TypeSafe AI's Jev "System One" model
+  (https://typesafe.ai) via a single Choice question. Sets the
+  `selected_provider` dynamic metadata key the platform's existing
+  provider-selection mechanism already reads (the same one
+  llm-header-router/model-round-robin use) — no gateway-controller changes
+  needed. Candidate ids must match `additionalProviders[].id` on the
+  LlmProxy this policy is attached to.
+
+  This is a proof-of-concept dev-policy: it sends the whole raw request body
+  as Jev's `state` rather than a minimized summary, and does no
+  eligibility/capability filtering of candidates before asking Jev to choose.
+  Not intended for production use as-is.
+
+parameters:
+  type: object
+  properties:
+    apiKey:
+      type: string
+      description: TypeSafe AI API key (https://typesafe.ai). Required.
+    baseURL:
+      type: string
+      description: Override the Jev API base URL (for testing only).
+      default: "https://api.typesafe.ai"
+    model:
+      type: string
+      description: Jev model identifier.
+      default: "jev-latest"
+    candidates:
+      type: object
+      description: |
+        Map of providerId -> description, where each providerId must match
+        an `additionalProviders[].id` on this LlmProxy. The description is
+        what Jev uses to decide between candidates, so it should describe
+        the provider's strengths (e.g. "cheap, fast, best for short casual
+        requests" vs "best for complex multi-step reasoning and coding").
+      additionalProperties:
+        type: string
+    confidenceThreshold:
+      type: number
+      description: Minimum Jev confidence (0-1) required to route to its chosen candidate.
+      default: 0.5
+    fallbackProvider:
+      type: string
+      description: |
+        Candidate id to route to when Jev errors, times out, picks an
+        unconfigured candidate, or returns confidence below
+        confidenceThreshold. Left empty, the request passes through with no
+        selected_provider set, falling through to the LlmProxy's own default
+        provider.
+      default: ""
+  required:
+    - apiKey
+    - candidates
+
+systemParameters:
+  type: object
+  properties: {}

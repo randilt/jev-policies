@@ -1,4 +1,4 @@
-module github.com/randilt/jev-guardrail
+module github.com/randilt/jev-policies/model-router
 
 go 1.26.2
 

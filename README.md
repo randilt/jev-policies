@@ -1,38 +1,31 @@
-# jev-guardrail
+# jev-policies
 
-A guardrail policy for [WSO2 API Platform](https://github.com/wso2/api-platform)'s AI Gateway, backed by [TypeSafe AI's Jev](https://typesafe.ai/) model. Screens a request body for jailbreak attempts, harmful requests, and self-harm signals, and blocks it (HTTP 422) when Jev's confidence crosses a configurable threshold.
+A collection of [WSO2 API Platform](https://github.com/wso2/api-platform) AI Gateway policies backed by [TypeSafe AI's Jev](https://typesafe.ai/) model — a "System One" model that answers typed questions (`Noul` = calibrated yes/no, `Choice` = categorical, `Score` = ordinal) about a piece of state, rather than generating text.
 
-**Status: proof of concept.** Built to answer one question — does Jev fit the API Platform's policy SDK contract and actually work — not to be production-ready as-is. See [Limitations](#limitations).
+Each policy is its own Go module in its own directory, versioned and buildable independently — mirroring how the platform's own vendor guardrails (`aws-bedrock-guardrail`, `azure-content-safety-content-moderation`, etc.) are organized in [`wso2/gateway-controllers`](https://github.com/wso2/gateway-controllers). None of these are vendored into `api-platform` core; each is opted into a gateway build via a `gomodule:`/`filePath:` entry in `build.yaml`.
 
-## How it works
+**Status: proof of concept, all of them.** See each policy's own README for what's been validated and what's still missing before it'd be production-ready.
 
-Implements `policyv1alpha2.RequestPolicy` from [`sdk/core/policy/v1alpha2`](https://github.com/wso2/api-platform/blob/main/sdk/core/policy/v1alpha2/interface.go). On each request it sends the body to Jev's `POST /v1/systemone` endpoint with three typed questions — `jailbreak`, `harmful_request` (both `Noul`, i.e. calibrated yes/no probabilities), and `severity` (a `Score`) — ported from TypeSafe's own [`llm_guardrails` cookbook](https://docs.typesafe.ai/cookbooks/llm_guardrails). If any answer crosses its threshold, it returns an `ImmediateResponse` with the same `type`/`message`/`assessments` envelope shape the platform's built-in guardrails (e.g. `regex-guardrail`) already use.
+## Policies
 
-## Parameters
-
-See [`policy-definition.yaml`](./policy-definition.yaml). Key ones: `apiKey` (required, TypeSafe API key), `noulThreshold` (default `0.7`), `severityThreshold` (default `2.0`), `onError` (`failOpen` / `failClosed` — required choice, since Jev has no self-hosted fallback if it's unreachable).
-
-## Test results
-
-`jevguardrail_test.go` calls the policy directly against the live Jev API (no gateway/Envoy involved) with 3 prompts:
-
-| Prompt | Result |
+| Policy | Description |
 |---|---|
-| Benign question | passed through |
-| Jailbreak attempt | blocked — `jailbreak` probability `0.99` (threshold `0.7`) |
-| Harmful-content request | blocked — `harmful_request` `0.98`, `severity` `3` (threshold `2`) |
+| [`guardrail/`](./guardrail) | Screens request/response bodies for jailbreak, harmful-content, and self-harm signals; blocks via the platform's standard guardrail envelope. |
+| [`model-router/`](./model-router) | Routes each request to the best-fit LLM provider from a configured candidate set, via the platform's existing `selected_provider` metadata mechanism. |
 
-Run it yourself:
-```bash
-echo "TYPESAFE_API_KEY=<your key>" > .env
-set -a && source .env && set +a && go test ./... -v
+## Common constraint
+
+Jev is closed, hosted-only SaaS — there's no self-host/VPC option as of writing, so every one of these policies sends request (and sometimes response) data to TypeSafe's API. Every policy here requires an explicit `apiKey` param and is opt-in only, never a default.
+
+## Using one of these
+
+```yaml
+# build.yaml
+policies:
+  - name: jev-guardrail
+    gomodule: github.com/randilt/jev-policies/guardrail@guardrail/v0.1.0
+  - name: jev-model-router
+    gomodule: github.com/randilt/jev-policies/model-router@model-router/v0.1.0
 ```
 
-3 hand-picked prompts prove the integration is mechanically sound — the SDK contract, the Jev API, and the block envelope all fit together correctly. It says nothing about false-positive/negative rates on ambiguous input or behavior under production load.
-
-## Limitations
-
-- Screens the entire raw request body as-is, instead of extracting the actual prompt text from a provider-specific JSON shape (a real implementation would add a `jsonPath` param, like `regex-guardrail` does).
-- Request phase only — no response-phase check yet.
-- No streaming support.
-- Jev is hosted-only SaaS with no self-host/VPC option (as of writing) — every request body sent through this policy leaves your environment to TypeSafe's API.
+Go's subdirectory-module versioning means each policy's tag is prefixed with its own directory name (`guardrail/vX.Y.Z`, `model-router/vX.Y.Z`), even though they live in one repo.
