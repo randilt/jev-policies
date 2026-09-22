@@ -1,0 +1,53 @@
+name: jev-guardrail
+version: v0.1.0
+displayName: Jev Guardrail (PoC)
+description: |
+  Screens the request body against a battery of typed safety questions
+  (jailbreak, harmful-request, self-harm, severity) using TypeSafe AI's Jev
+  "System One" model (https://typesafe.ai), blocking the request when any
+  configured threshold is crossed.
+
+  This is a proof-of-concept dev-policy: it treats the whole request body as
+  the Jev `state` rather than extracting the prompt from a provider-specific
+  JSON shape, and only screens the request phase (no response-phase check
+  yet). Not intended for production use as-is.
+
+parameters:
+  type: object
+  properties:
+    apiKey:
+      type: string
+      description: TypeSafe AI API key (https://typesafe.ai). Required.
+    baseURL:
+      type: string
+      description: Override the Jev API base URL (for testing only).
+      default: "https://api.typesafe.ai"
+    model:
+      type: string
+      description: Jev model identifier.
+      default: "jev-latest"
+    noulThreshold:
+      type: number
+      description: Minimum probability (0-1) on any Noul hazard question to block the request.
+      default: 0.7
+    severityThreshold:
+      type: number
+      description: Minimum severity Score (0-3) to block the request.
+      default: 2.0
+    onError:
+      type: string
+      description: |
+        Behavior when the Jev API call fails, times out, or is rate-limited.
+        "failOpen" passes the request through unscreened; "failClosed" blocks
+        the request. Jev is hosted-only SaaS with no self-host/VPC option, so
+        this must be an explicit operator choice.
+      default: "failOpen"
+      enum:
+        - failOpen
+        - failClosed
+  required:
+    - apiKey
+
+systemParameters:
+  type: object
+  properties: {}
