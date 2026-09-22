@@ -1,5 +1,5 @@
 module github.com/randilt/jev-guardrail
 
-go 1.26.5
+go 1.26.2
 
 require github.com/wso2/api-platform/sdk/core v0.2.9
