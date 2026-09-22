@@ -23,9 +23,14 @@ Jev is closed, hosted-only SaaS — there's no self-host/VPC option as of writin
 # build.yaml
 policies:
   - name: jev-guardrail
-    gomodule: github.com/randilt/jev-policies/guardrail@guardrail/v0.1.0
+    gomodule: github.com/randilt/jev-policies/guardrail@v0.1.0
   - name: jev-model-router
-    gomodule: github.com/randilt/jev-policies/model-router@model-router/v0.1.0
+    gomodule: github.com/randilt/jev-policies/model-router@v0.1.0
 ```
 
-Go's subdirectory-module versioning means each policy's tag is prefixed with its own directory name (`guardrail/vX.Y.Z`, `model-router/vX.Y.Z`), even though they live in one repo.
+Each policy is tagged as `<directory>/vX.Y.Z` (e.g. `guardrail/v0.1.0`,
+`model-router/v0.1.0`) so the two can be versioned independently in one repo
+— that's Go's standard subdirectory-module convention. The `gomodule:`
+reference itself only needs the plain `vX.Y.Z`; Go resolves it against the
+matching prefixed tag automatically. Verified this resolves correctly via
+`go mod download` for both policies before pushing.
