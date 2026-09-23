@@ -1,5 +1,5 @@
 name: jev-model-router
-version: v0.1.0
+version: v0.1.2
 displayName: Jev Model Router (PoC)
 description: |
   Routes each request to the best-fit LLM provider from a configured
@@ -52,6 +52,18 @@ parameters:
         confidenceThreshold. Left empty, the request passes through with no
         selected_provider set, falling through to the LlmProxy's own default
         provider.
+      default: ""
+    defaultCandidate:
+      type: string
+      description: |
+        The candidate id (if any) that represents this LlmProxy's own
+        primary/default provider, as opposed to one of its
+        additionalProviders. The primary provider has no named
+        UpstreamDefinition to route to, so when Jev picks this candidate,
+        the policy leaves selected_provider unset instead of setting
+        UpstreamName — same as picking no candidate at all. Only needed if
+        the primary provider is included in `candidates`; must match one of
+        its keys.
       default: ""
   required:
     - apiKey

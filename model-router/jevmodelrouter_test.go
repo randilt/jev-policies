@@ -56,6 +56,50 @@ func TestRoute_EmptyProviderClearsStaleMetadata(t *testing.T) {
 	}
 }
 
+// TestRoute_DefaultCandidateResolvesToEmptyProvider matches the real bug
+// found testing against a live gateway: an LlmProxy's primary provider has
+// no named UpstreamDefinition cluster, so routing Jev's choice straight
+// through as UpstreamName produces an Envoy "cluster_not_found" for it.
+// defaultCandidate must make route() treat that choice exactly like an
+// empty providerID.
+func TestRoute_DefaultCandidateResolvesToEmptyProvider(t *testing.T) {
+	p := &RouterPolicy{defaultCandidate: "gpt-4o-mini-azure-open-ai"}
+	reqCtx := &policy.RequestContext{
+		SharedContext: &policy.SharedContext{
+			Metadata: map[string]interface{}{"selected_provider": "stale-value"},
+		},
+	}
+
+	action := p.route(reqCtx, "gpt-4o-mini-azure-open-ai")
+
+	mods, ok := action.(policy.UpstreamRequestModifications)
+	if !ok {
+		t.Fatalf("expected UpstreamRequestModifications, got %T", action)
+	}
+	if mods.UpstreamName != nil {
+		t.Fatalf("expected no UpstreamName when routing to defaultCandidate, got %v", *mods.UpstreamName)
+	}
+	if _, exists := reqCtx.Metadata["selected_provider"]; exists {
+		t.Fatalf("expected selected_provider metadata to be cleared when routing to defaultCandidate, still present: %v", reqCtx.Metadata["selected_provider"])
+	}
+}
+
+// TestGetPolicy_RejectsUnknownDefaultCandidate ensures a misconfigured
+// defaultCandidate (a typo, or one that doesn't match any candidates key)
+// fails fast at policy construction instead of silently never matching.
+func TestGetPolicy_RejectsUnknownDefaultCandidate(t *testing.T) {
+	_, err := GetPolicy(policy.PolicyMetadata{}, map[string]interface{}{
+		"apiKey": "test-key",
+		"candidates": map[string]interface{}{
+			"gpt-4o-mini": "cheap",
+		},
+		"defaultCandidate": "not-a-candidate",
+	})
+	if err == nil {
+		t.Fatal("expected GetPolicy to reject a defaultCandidate not present in candidates")
+	}
+}
+
 // TestJevModelRouter_OnRequestBody exercises the policy directly (no Envoy,
 // no gateway runtime) against the real Jev API, using TYPESAFE_API_KEY from
 // the environment. Skips if the key isn't set.

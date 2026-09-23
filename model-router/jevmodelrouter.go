@@ -18,6 +18,19 @@
 // upstream was never actually repointed, because DynamicMetadata isn't the
 // mechanism any shipped router uses. Fixed here.
 //
+// A second, separate bug fixed here: candidates aren't necessarily
+// additionalProviders. An LlmProxy's primary/default provider is never
+// registered as a named UpstreamDefinition (only additionalProviders are —
+// see gateway-controller/pkg/utils/llm_transformer.go's additionalProviders
+// loop), so setting UpstreamName to the primary provider's own id/alias
+// points at a cluster that was never created (Envoy: "cluster_not_found").
+// Every built-in routing policy (e.g. cost-based-model-routing's `target`
+// struct) handles this with an explicit convention: an empty provider
+// string means "use the LLM proxy's primary/default provider", i.e. don't
+// set UpstreamName at all. This policy adopts the same convention via the
+// optional defaultCandidate param: when Jev's choice equals defaultCandidate,
+// route() is called with "" instead of the candidate's own id.
+//
 // Known gaps deliberately left for a future iteration:
 //   - Sends the whole raw request body as the Jev `state`, rather than a
 //     minimized summary (recent message roles/truncated text, tool/vision
@@ -61,6 +74,7 @@ type RouterPolicy struct {
 	candidates          map[string]string
 	confidenceThreshold float64
 	fallbackProvider    string
+	defaultCandidate    string
 }
 
 // GetPolicy is the factory function the gateway (or, here, a standalone
@@ -92,11 +106,23 @@ func GetPolicy(metadata policy.PolicyMetadata, params map[string]interface{}) (p
 	}
 	fallbackProvider, _ := params["fallbackProvider"].(string)
 
+	// defaultCandidate names the candidate that represents the LLM proxy's
+	// own primary/default provider (as opposed to one of its
+	// additionalProviders). Picking it must not set UpstreamName — see the
+	// package doc comment.
+	defaultCandidate, _ := params["defaultCandidate"].(string)
+	if defaultCandidate != "" {
+		if _, known := candidates[defaultCandidate]; !known {
+			return nil, fmt.Errorf("jev-model-router: defaultCandidate %q must be one of the configured candidates", defaultCandidate)
+		}
+	}
+
 	return &RouterPolicy{
 		client:              newJevClient(apiKey, baseURL, model),
 		candidates:          candidates,
 		confidenceThreshold: confidenceThreshold,
 		fallbackProvider:    fallbackProvider,
+		defaultCandidate:    defaultCandidate,
 	}, nil
 }
 
@@ -147,14 +173,20 @@ func (p *RouterPolicy) OnRequestBody(ctx context.Context, reqCtx *policy.Request
 
 // route points the request at providerID's named upstream and publishes the
 // engine's selected_provider contract key, exactly as every built-in routing
-// policy's applyProviderRouting-equivalent does. An empty providerID (an
-// unset fallbackProvider on a failure path) must use the LLM proxy's default
-// provider, so no upstream name is set and any selected_provider left behind
-// by an earlier policy in the chain is removed — stale routing metadata
-// would otherwise select the wrong provider.
+// policy's applyProviderRouting-equivalent does. providerID is resolved to ""
+// (meaning "use the LLM proxy's primary/default provider", so no upstream
+// name is set) when it's empty already (an unset fallbackProvider on a
+// failure path) or when it equals defaultCandidate (Jev explicitly chose the
+// primary provider, which has no named upstream to route to — see the
+// package doc comment). Either way, any selected_provider left behind by an
+// earlier policy in the chain is removed — stale routing metadata would
+// otherwise select the wrong provider.
 func (p *RouterPolicy) route(reqCtx *policy.RequestContext, providerID string) policy.RequestAction {
 	if reqCtx.Metadata == nil {
 		reqCtx.Metadata = make(map[string]interface{})
+	}
+	if providerID != "" && p.defaultCandidate != "" && providerID == p.defaultCandidate {
+		providerID = ""
 	}
 	if providerID == "" {
 		delete(reqCtx.Metadata, metadataProviderRouting)
