@@ -42,6 +42,8 @@ Two prompts prove the SDK contract, the Jev API, and the routing mechanism all f
 
 **End-to-end verified** on a real self-hosted gateway (`wso2apip-ai-gateway`), routed through an `azure-openai-provider-proxy` LlmProxy with a primary provider (`gpt-4o-mini-azure-open-ai`) and one `additionalProviders` entry (`fifififi`). This is what surfaced the `defaultCandidate` bug above — direct Go-level calls to `OnRequestBody` had confirmed Jev's decision logic (`v0.1.1`), but the real Envoy routing still 503'd (`cluster_not_found`) until `defaultCandidate` was added (`v0.1.2`), because the live route's `candidates` config included the primary provider by its own id.
 
+Note: the Go module tag went `v0.1.0` → `v0.1.1` → `v0.1.2` as the fixes landed, but `policy-definition.yaml`'s own `version` field jumped straight from `v0.1.0` to `v0.2.0` — AI Workspace's custom-policy sync (`platform-api/internal/service/gateway.go`) rejects a same-major.minor, different-patch resync ("patch version updates are not allowed") once a version is registered, so a minor bump was required to update the already-synced `v0.1.0` entry.
+
 ## Limitations
 
 - Sends the whole raw request body as Jev's `state`, instead of a minimized summary (recent message roles/truncated text, tool/vision signals) the way the reference [`prismhq/jev-router`](https://github.com/prismhq/jev-router) project does.

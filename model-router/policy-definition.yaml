@@ -1,5 +1,5 @@
 name: jev-model-router
-version: v0.1.2
+version: v0.2.0
 displayName: Jev Model Router (PoC)
 description: |
   Routes each request to the best-fit LLM provider from a configured
