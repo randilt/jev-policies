@@ -8,6 +8,54 @@ import (
 	policy "github.com/wso2/api-platform/sdk/core/policy/v1alpha2"
 )
 
+// TestRoute_SetsUpstreamNameAndMetadata is a fast, no-network unit test of
+// the actual routing mechanism — this is the part that was wrong before
+// (writing to DynamicMetadata instead of UpstreamName + reqCtx.Metadata),
+// and is worth covering independent of the live-Jev integration test below.
+func TestRoute_SetsUpstreamNameAndMetadata(t *testing.T) {
+	p := &RouterPolicy{}
+	reqCtx := &policy.RequestContext{SharedContext: &policy.SharedContext{}}
+
+	action := p.route(reqCtx, "gpt-4o")
+
+	mods, ok := action.(policy.UpstreamRequestModifications)
+	if !ok {
+		t.Fatalf("expected UpstreamRequestModifications, got %T", action)
+	}
+	if mods.UpstreamName == nil || *mods.UpstreamName != "gpt-4o" {
+		t.Fatalf("unexpected UpstreamName: %v", mods.UpstreamName)
+	}
+	if reqCtx.Metadata["selected_provider"] != "gpt-4o" {
+		t.Fatalf("unexpected Metadata[selected_provider]: %v", reqCtx.Metadata["selected_provider"])
+	}
+}
+
+// TestRoute_EmptyProviderClearsStaleMetadata matches
+// cost-based-model-routing's applyProviderRouting behavior: an empty
+// providerID (unset fallbackProvider on a failure path) must not leave a
+// stale selected_provider key from an earlier policy in the chain.
+func TestRoute_EmptyProviderClearsStaleMetadata(t *testing.T) {
+	p := &RouterPolicy{}
+	reqCtx := &policy.RequestContext{
+		SharedContext: &policy.SharedContext{
+			Metadata: map[string]interface{}{"selected_provider": "stale-value"},
+		},
+	}
+
+	action := p.route(reqCtx, "")
+
+	mods, ok := action.(policy.UpstreamRequestModifications)
+	if !ok {
+		t.Fatalf("expected UpstreamRequestModifications, got %T", action)
+	}
+	if mods.UpstreamName != nil {
+		t.Fatalf("expected no UpstreamName for empty providerID, got %v", *mods.UpstreamName)
+	}
+	if _, exists := reqCtx.Metadata["selected_provider"]; exists {
+		t.Fatalf("expected stale selected_provider metadata to be cleared, still present: %v", reqCtx.Metadata["selected_provider"])
+	}
+}
+
 // TestJevModelRouter_OnRequestBody exercises the policy directly (no Envoy,
 // no gateway runtime) against the real Jev API, using TYPESAFE_API_KEY from
 // the environment. Skips if the key isn't set.
@@ -70,11 +118,17 @@ func TestJevModelRouter_OnRequestBody(t *testing.T) {
 			if !ok {
 				t.Fatalf("expected UpstreamRequestModifications (a routing decision), got %T (action was nil or unrouted)", action)
 			}
-			got := mods.DynamicMetadata[extProcMetadataNamespace]["selected_provider"]
-			t.Logf("routed to: %v", got)
+			if mods.UpstreamName == nil {
+				t.Fatalf("expected UpstreamName to be set, got nil")
+			}
+			t.Logf("routed to (UpstreamName): %v", *mods.UpstreamName)
+			t.Logf("routed to (Metadata): %v", reqCtx.Metadata["selected_provider"])
 
-			if got != tc.wantProvider {
-				t.Errorf("body %q: routed to %v, want %q", tc.body, got, tc.wantProvider)
+			if *mods.UpstreamName != tc.wantProvider {
+				t.Errorf("body %q: UpstreamName = %v, want %q", tc.body, *mods.UpstreamName, tc.wantProvider)
+			}
+			if reqCtx.Metadata["selected_provider"] != tc.wantProvider {
+				t.Errorf("body %q: Metadata[selected_provider] = %v, want %q", tc.body, reqCtx.Metadata["selected_provider"], tc.wantProvider)
 			}
 		})
 	}

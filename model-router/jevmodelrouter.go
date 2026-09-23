@@ -1,16 +1,24 @@
-// Package jevmodelrouter is a proof-of-concept LLM provider/model routing
-// policy backed by TypeSafe AI's Jev "System One" model (https://typesafe.ai).
-// It asks Jev to pick the best-fit candidate provider for each request and
-// writes that choice into the dynamic metadata key the platform's existing
-// provider-selection mechanism already reads
-// (gateway-controller/pkg/utils/llm_transformer.go: selectedProviderExecutionCondition,
-// which gates each configured additionalProviders[] entry on
-// request.Metadata['selected_provider']). No gateway-controller changes are
-// needed — this policy only has to set that one key, the same way the
-// built-in llm-header-router/model-round-robin policies do.
+// Package jevmodelrouter is an LLM provider/model routing policy backed by
+// TypeSafe AI's Jev "System One" model (https://typesafe.ai). It asks Jev to
+// pick the best-fit candidate provider for each request and routes to it the
+// same way every built-in routing policy in gateway-controllers does
+// (intelligent-model-routing, semantic-model-routing, time-based-model-routing,
+// cost-based-model-routing all agree on this exact pattern):
+//   - set UpstreamRequestModifications.UpstreamName to the chosen provider's
+//     alias, which points the request at that named upstream directly, and
+//   - write reqCtx.Metadata["selected_provider"] = <alias> so downstream
+//     per-provider policies (auth, transformers) that key off that value in
+//     the same request see the same selection.
 //
-// This is a dev-policy PoC, not a production implementation. Known gaps
-// deliberately left for a real implementation:
+// An earlier version of this policy set the selection via
+// UpstreamRequestModifications.DynamicMetadata instead, reasoning from the
+// ext_proc kernel's dynamic-metadata plumbing rather than from how the
+// platform's own routing policies actually do it. That version's Jev call
+// and decision logic worked (confirmed via its own debug logs), but the
+// upstream was never actually repointed, because DynamicMetadata isn't the
+// mechanism any shipped router uses. Fixed here.
+//
+// Known gaps deliberately left for a future iteration:
 //   - Sends the whole raw request body as the Jev `state`, rather than a
 //     minimized summary (recent message roles/truncated text, tool/vision
 //     signals) the way the reference prismhq/jev-router project does.
@@ -27,12 +35,12 @@ import (
 	policy "github.com/wso2/api-platform/sdk/core/policy/v1alpha2"
 )
 
-// extProcMetadataNamespace is the dynamic-metadata namespace the platform's
-// ext_proc kernel merges a policy's UpstreamRequestModifications.DynamicMetadata
-// into, and the same namespace the generated CEL routing condition reads as
-// request.Metadata. Confirmed against gateway-runtime/policy-engine/internal/constants
-// and gateway-controller/pkg/constants, which both define this exact string.
-const extProcMetadataNamespace = "api_platform.policy_engine.envoy.filters.http.ext_proc"
+// metadataProviderRouting is the SharedContext.Metadata key the platform's
+// existing provider-selection mechanism reads
+// (gateway-controller/pkg/utils/llm_transformer.go: selectedProviderExecutionCondition
+// gates each configured additionalProviders[] entry on this key). Matches
+// the constant of the same name/value in every built-in routing policy.
+const metadataProviderRouting = "selected_provider"
 
 // maxStateChars bounds how much of the raw request body is sent to Jev as
 // state, so an oversized payload doesn't blow up latency/cost on a
@@ -120,36 +128,40 @@ func (p *RouterPolicy) OnRequestBody(ctx context.Context, reqCtx *policy.Request
 	choice, confidence, err := p.client.pickProvider(ctx, state, p.candidates)
 	if err != nil {
 		slog.Error("[jev-model-router] Jev call failed", "error", err)
-		return p.route(p.fallbackProvider)
+		return p.route(reqCtx, p.fallbackProvider)
 	}
 
 	if _, known := p.candidates[choice]; !known {
 		slog.Warn("[jev-model-router] Jev picked an unconfigured candidate, falling back", "choice", choice)
-		return p.route(p.fallbackProvider)
+		return p.route(reqCtx, p.fallbackProvider)
 	}
 	if confidence < p.confidenceThreshold {
 		slog.Info("[jev-model-router] confidence below threshold, falling back",
 			"choice", choice, "confidence", confidence, "threshold", p.confidenceThreshold)
-		return p.route(p.fallbackProvider)
+		return p.route(reqCtx, p.fallbackProvider)
 	}
 
 	slog.Info("[jev-model-router] routed", "choice", choice, "confidence", confidence)
-	return p.route(choice)
+	return p.route(reqCtx, choice)
 }
 
-// route sets selected_provider when providerID is non-empty, or passes the
-// request through untouched (leaving it to the gateway's default provider)
-// when it's empty — the empty case covers an unset fallbackProvider on any
-// failure path.
-func (p *RouterPolicy) route(providerID string) policy.RequestAction {
-	if providerID == "" {
-		return nil
+// route points the request at providerID's named upstream and publishes the
+// engine's selected_provider contract key, exactly as every built-in routing
+// policy's applyProviderRouting-equivalent does. An empty providerID (an
+// unset fallbackProvider on a failure path) must use the LLM proxy's default
+// provider, so no upstream name is set and any selected_provider left behind
+// by an earlier policy in the chain is removed — stale routing metadata
+// would otherwise select the wrong provider.
+func (p *RouterPolicy) route(reqCtx *policy.RequestContext, providerID string) policy.RequestAction {
+	if reqCtx.Metadata == nil {
+		reqCtx.Metadata = make(map[string]interface{})
 	}
+	if providerID == "" {
+		delete(reqCtx.Metadata, metadataProviderRouting)
+		return policy.UpstreamRequestModifications{}
+	}
+	reqCtx.Metadata[metadataProviderRouting] = providerID
 	return policy.UpstreamRequestModifications{
-		DynamicMetadata: map[string]map[string]any{
-			extProcMetadataNamespace: {
-				"selected_provider": providerID,
-			},
-		},
+		UpstreamName: &providerID,
 	}
 }
